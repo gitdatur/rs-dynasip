@@ -1,0 +1,9 @@
+[package]
+name = "rs-dynasip"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.45.1", features = ["full"] }
+nom = "8.0.0"
+rsip = "0.4.0"
