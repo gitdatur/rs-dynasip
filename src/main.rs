@@ -1,30 +1,34 @@
+mod shared_state;
+
+use crate::shared_state::SharedState;
 use nom::bytes::complete::tag;
 use nom::bytes::complete::take_until;
 use nom::combinator::recognize;
 use nom::error::Error;
 use nom::Parser;
 use std::io;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::str::FromStr;
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 
-async fn process_socket<T>(mut socket: T)
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-{
+async fn process_socket(stream: Arc<Mutex<TcpStream>>) {
     let max_sip_message_size = 65536;
     let crlf_pattern = b"\r\n\r\n" as &[u8];
-    let mut buffer = [0; 1];
+    let mut buffer = [0; 1421];
     let mut buffer_accumulator: Vec<u8> = Vec::with_capacity(max_sip_message_size);
     let mut last_parsed_index: usize = 0;
     loop {
-        match socket.read(&mut buffer).await {
+        match stream.lock().await.read(&mut buffer).await {
             Ok(0) => {
                 println!("Connection closed.");
                 break;
             }
             Ok(number_of_read_bytes) => {
                 println!("number_of_read_bytes {}", number_of_read_bytes);
-                if (number_of_read_bytes + buffer_accumulator.len() >= max_sip_message_size) {
+                if number_of_read_bytes + buffer_accumulator.len() >= max_sip_message_size {
                     println!("Too many bytes received and no CRLF reached, terminating socket");
                     break;
                 }
@@ -74,7 +78,6 @@ where
                     }
                 }
                 println!("last_parsed_index {}", last_parsed_index);
-                println!("");
             }
             Err(_) => {
                 println!("failed to read data from socket")
@@ -85,9 +88,24 @@ where
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:5060").await?;
+    let global_shard_state = Arc::new(SharedState::new());
+    let local_socket_addr = SocketAddr::V4(SocketAddrV4::new(
+        Ipv4Addr::from_str("127.0.0.1").unwrap(),
+        5060,
+    ));
+
+    let local_ipv4_server = global_shard_state
+        .clone()
+        .put_tcp_server(
+            local_socket_addr,
+            TcpListener::bind(local_socket_addr).await?,
+        )
+        .await;
     loop {
-        let (socket, _) = listener.accept().await?;
-        process_socket(socket).await;
+        let (stream, socket_address) = local_ipv4_server.accept().await?;
+        let stream = global_shard_state
+            .put_tcp_client_socket(socket_address, stream)
+            .await;
+        process_socket(stream).await;
     }
 }
