@@ -1,17 +1,18 @@
 mod shared_state;
+mod sip_server;
 
 use crate::shared_state::SharedState;
+use crate::sip_server::common_structs::SocketProperties;
+use crate::sip_server::tcp_ipv4_server::TcpIpv4Server;
 use nom::bytes::complete::tag;
 use nom::bytes::complete::take_until;
 use nom::combinator::recognize;
 use nom::error::Error;
 use nom::Parser;
-use std::io;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 async fn process_socket(stream: Arc<Mutex<TcpStream>>) {
@@ -87,25 +88,26 @@ async fn process_socket(stream: Arc<Mutex<TcpStream>>) {
 }
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
-    let global_shard_state = Arc::new(SharedState::new());
-    let local_socket_addr = SocketAddr::V4(SocketAddrV4::new(
-        Ipv4Addr::from_str("127.0.0.1").unwrap(),
-        5060,
-    ));
-
-    let local_ipv4_server = global_shard_state
-        .clone()
-        .put_tcp_server(
-            local_socket_addr,
-            TcpListener::bind(local_socket_addr).await?,
-        )
-        .await;
+async fn main() {
+    let global_shared_state = Arc::new(SharedState::new());
+    let localhost_tcp_ipv4_server = TcpIpv4Server::new(
+        Arc::clone(&global_shared_state),
+        SocketProperties {
+            max_sip_message_size: 65536,
+            buffer_size: 1412,
+            ip_address: "127.0.0.1".to_string(),
+            port: 5060,
+        },
+    );
+    match localhost_tcp_ipv4_server.start().await {
+        Ok(_) => {}
+        Err(_) => {}
+    };
     loop {
-        let (stream, socket_address) = local_ipv4_server.accept().await?;
-        let stream = global_shard_state
+        let (stream, socket_address) = local_tcp_server.accept().await?;
+        let stream = global_shared_state
             .put_tcp_client_socket(socket_address, stream)
             .await;
-        process_socket(stream).await;
+        tokio::spawn(process_socket(stream));
     }
 }
