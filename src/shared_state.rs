@@ -1,4 +1,5 @@
 use crate::sip::common_structs::TcpClient;
+use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -29,7 +30,20 @@ impl SharedState {
     pub async fn put_tcp_ipv4_client(&self, socket_addr: String, tcp_client: Arc<TcpClient>) {
         self.tcp_ipv4_clients.insert(socket_addr, tcp_client);
     }
+    pub async fn get_tcp_ipv4_client(
+        &self,
+        socket_addr: &String,
+    ) -> Option<Ref<String, Arc<TcpClient>>> {
+        self.tcp_ipv4_clients.get(socket_addr)
+    }
     pub async fn put_ipv6_tcp_client(&self, socket_addr: String, tcp_client: Arc<TcpClient>) {
         self.tcp_ipv6_clients.insert(socket_addr, tcp_client);
+    }
+
+    pub async fn remove_tcp_ipv4_client(
+        &self,
+        socket_addr: &String,
+    ) -> Option<(String, Arc<TcpClient>)> {
+        self.tcp_ipv4_clients.remove(socket_addr)
     }
 }

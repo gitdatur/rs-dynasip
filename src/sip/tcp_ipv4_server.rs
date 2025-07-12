@@ -76,31 +76,39 @@ async fn accept_clients(tcp_listener: Arc<TcpListener>, shared_state: Arc<Shared
                         Arc::clone(&client),
                     )
                     .await;
-
-                tokio::spawn(handle_tcp_client(Arc::clone(&client)));
+                tokio::spawn(handle_tcp_client(
+                    Arc::clone(&client),
+                    Arc::clone(&shared_state),
+                ));
             }
             Err(_) => {}
         };
     }
 }
 
-async fn handle_tcp_client(client: Arc<TcpClient>) {
+async fn handle_tcp_client(client: Arc<TcpClient>, shared_state: Arc<SharedState>) {
     let max_sip_message_size = 65536;
     let crlf_pattern = b"\r\n\r\n" as &[u8];
     let mut buffer = [0; 1421];
     let mut buffer_accumulator: Vec<u8> = Vec::with_capacity(max_sip_message_size);
     let mut last_parsed_index: usize = 0;
     let mut stream = client.stream.lock().await;
+    // stream.into_split()
     loop {
         match stream.read(&mut buffer).await {
             Ok(0) => {
-                println!("Connection closed.");
+                info!("client disconnected [{}]", stream.peer_addr().unwrap());
+                shared_state
+                    .remove_tcp_ipv4_client(&stream.peer_addr().unwrap().to_string())
+                    .await;
                 break;
             }
             Ok(number_of_read_bytes) => {
-                println!("number_of_read_bytes {}", number_of_read_bytes);
                 if number_of_read_bytes + buffer_accumulator.len() >= max_sip_message_size {
-                    println!("Too many bytes received and no CRLF reached, terminating socket");
+                    error!(
+                        "Too many bytes received and no CRLF reached, terminating client [{}]",
+                        stream.peer_addr().unwrap()
+                    );
                     break;
                 }
 
