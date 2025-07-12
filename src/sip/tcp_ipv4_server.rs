@@ -1,11 +1,14 @@
 use crate::shared_state::SharedState;
-use crate::sip_server::common_structs::{SocketProperties, TcpClient};
+use crate::sip::common_structs::{SocketProperties, TcpClient};
+use log::{error, info};
 use nom::bytes::complete::{tag, take_until};
 use nom::combinator::recognize;
 use nom::error::Error;
+use nom::Parser;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex};
 
@@ -33,6 +36,7 @@ impl TcpIpv4Server {
                 return Err("error parsing ip address");
             }
         };
+
         let socket_address = SocketAddr::V4(SocketAddrV4::new(ipv4, 5060));
         let tcp_listener_result = TcpListener::bind(socket_address).await;
         let tcp_listener = match tcp_listener_result {
@@ -44,6 +48,7 @@ impl TcpIpv4Server {
         self.shared_state
             .put_tcp_ipv4_server(socket_address.to_string(), Arc::clone(&tcp_listener))
             .await;
+        info!("listening for tcp ipv4 connections on {}", socket_address);
         tokio::spawn(accept_clients(
             Arc::clone(&tcp_listener),
             Arc::clone(&self.shared_state),
@@ -56,29 +61,38 @@ async fn accept_clients(tcp_listener: Arc<TcpListener>, shared_state: Arc<Shared
     loop {
         match tcp_listener.accept().await {
             Ok((stream, _)) => {
-                let (tx, rx) = oneshot::channel();
-                let tcp_client = Arc::new(RwLock::new(TcpClient { stream: Mutex::new(stream), disconnect_client_signal: Mutex::new(tx) })));
-                let tcp_client_guard = tcp_client.stream.lock().await;
-                let socket_address = tcp_client_guard.peer_addr().unwrap().to_string();
+                info!(
+                    "new ipv4 tcp connection from {}",
+                    stream.peer_addr().unwrap()
+                );
+                let (shutdown_tx, shutdown_rx) = oneshot::channel();
+                let client = Arc::new(TcpClient {
+                    stream: Mutex::new(stream),
+                    disconnect_client_signal: Mutex::new(shutdown_tx),
+                });
                 shared_state
-                    .put_tcp_ipv4_client(socket_address, Arc::clone(&tcp_client))
+                    .put_tcp_ipv4_client(
+                        client.stream.lock().await.peer_addr().unwrap().to_string(),
+                        Arc::clone(&client),
+                    )
                     .await;
-                drop(tcp_client_guard);
-                tokio::spawn(handle_tcp_client(Arc::clone(&tcp_client)));
+
+                tokio::spawn(handle_tcp_client(Arc::clone(&client)));
             }
             Err(_) => {}
         };
     }
 }
 
-async fn handle_tcp_client(tcp_client: Arc<Mutex<TcpClient>>) {
+async fn handle_tcp_client(client: Arc<TcpClient>) {
     let max_sip_message_size = 65536;
     let crlf_pattern = b"\r\n\r\n" as &[u8];
     let mut buffer = [0; 1421];
     let mut buffer_accumulator: Vec<u8> = Vec::with_capacity(max_sip_message_size);
     let mut last_parsed_index: usize = 0;
+    let mut stream = client.stream.lock().await;
     loop {
-        match tcp_client.lock().await.read(&mut buffer).await {
+        match stream.read(&mut buffer).await {
             Ok(0) => {
                 println!("Connection closed.");
                 break;
@@ -91,41 +105,35 @@ async fn handle_tcp_client(tcp_client: Arc<Mutex<TcpClient>>) {
                 }
 
                 buffer_accumulator.extend_from_slice(&buffer[..number_of_read_bytes]);
-                println!("buffer_accumulator.len() : {}", buffer_accumulator.len());
 
                 let parse_result = recognize((
                     take_until::<&[u8], &[u8], Error<&[u8]>>(crlf_pattern),
                     tag(crlf_pattern),
                 ))
-                    .parse(
-                        &buffer_accumulator[last_parsed_index.saturating_sub(5)
-                            ..last_parsed_index + number_of_read_bytes - 1],
-                    );
-                println!(
-                    "parsing from {} to {}",
-                    last_parsed_index.saturating_sub(5),
-                    last_parsed_index + number_of_read_bytes - 1
+                .parse(
+                    &buffer_accumulator[last_parsed_index.saturating_sub(5)
+                        ..last_parsed_index + number_of_read_bytes - 1],
                 );
 
                 match parse_result {
                     Ok((untouched, touched)) => {
-                        println!("touched.len() : {}", touched.len());
-                        println!("untouched.len() : {}", untouched.len());
-                        println!("last_parsed_index {}", last_parsed_index);
-                        println!(
-                            "draining touched.len() and prev parsed depending on last parsed index [{}]",
-                            touched.len() + last_parsed_index + number_of_read_bytes
-                        );
                         let potential_sip_message = buffer_accumulator
                             .drain(..last_parsed_index + number_of_read_bytes - untouched.len());
                         let sip_parsing_result =
                             rsip::Request::try_from(potential_sip_message.as_slice());
                         match sip_parsing_result {
                             Ok(request) => {
-                                println!("parsed sip message: {:?}", request);
+                                info!(
+                                    "parsed a sip message from tcp ipv4 client {}",
+                                    stream.peer_addr().unwrap()
+                                )
                             }
                             Err(sip_parse_error) => {
-                                println!("sip_parse_error: {:?}", sip_parse_error);
+                                error!(
+                                    "failed to parse a sip message from tcp ipv4 client {} [{}]",
+                                    stream.peer_addr().unwrap(),
+                                    sip_parse_error.to_string()
+                                )
                             }
                         }
                         last_parsed_index = 0;
@@ -134,7 +142,6 @@ async fn handle_tcp_client(tcp_client: Arc<Mutex<TcpClient>>) {
                         last_parsed_index = last_parsed_index + number_of_read_bytes;
                     }
                 }
-                println!("last_parsed_index {}", last_parsed_index);
             }
             Err(_) => {
                 println!("failed to read data from socket")
