@@ -1,54 +1,52 @@
+use crate::sip_server::common_structs::TcpClient;
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::net::TcpListener;
+use tokio::sync::{Mutex, RwLock};
 
 pub struct SharedState {
-    tcp_ipv4_servers: Mutex<HashMap<String, Arc<TcpListener>>>,
-    tcp_ipv6_servers: Mutex<HashMap<String, Arc<TcpListener>>>,
-    ipv4_tcp_clients_sockets: Mutex<HashMap<SocketAddr, Arc<Mutex<TcpStream>>>>,
-    ipv6_tcp_clients_sockets: Mutex<HashMap<SocketAddr, Arc<Mutex<TcpStream>>>>,
+    tcp_ipv4_servers: RwLock<HashMap<String, Arc<TcpListener>>>,
+    tcp_ipv6_servers: RwLock<HashMap<String, Arc<TcpListener>>>,
+    tcp_ipv4_clients: RwLock<HashMap<String, Arc<RwLock<TcpClient>>>>,
+    tcp_ipv6_clients: RwLock<HashMap<String, Arc<RwLock<TcpClient>>>>,
 }
 
 impl SharedState {
     pub fn new() -> Self {
         SharedState {
-            tcp_ipv4_servers: Mutex::new(HashMap::new()),
-            tcp_ipv6_servers: Mutex::new(HashMap::new()),
-            ipv4_tcp_clients_sockets: Mutex::new(HashMap::new()),
-            ipv6_tcp_clients_sockets: Mutex::new(HashMap::new()),
+            tcp_ipv4_servers: RwLock::new(HashMap::new()),
+            tcp_ipv6_servers: RwLock::new(HashMap::new()),
+            tcp_ipv4_clients: RwLock::new(HashMap::new()),
+            tcp_ipv6_clients: RwLock::new(HashMap::new()),
         }
     }
 
     pub async fn put_tcp_ipv4_server(&self, socket_addr: String, listener: Arc<TcpListener>) {
-        let mut mutex_guard = self.tcp_ipv4_servers.lock().await;
+        let mut mutex_guard = self.tcp_ipv4_servers.write().await;
         mutex_guard.insert(socket_addr, listener);
         drop(mutex_guard);
     }
     pub async fn put_ipv6_tcp_server(&self, socket_addr: String, listener: Arc<TcpListener>) {
-        let mut mutex_guard = self.tcp_ipv6_servers.lock().await;
+        let mut mutex_guard = self.tcp_ipv6_servers.write().await;
         mutex_guard.insert(socket_addr, listener);
         drop(mutex_guard);
     }
-    pub async fn put_tcp_client_socket(
+    pub async fn put_tcp_ipv4_client(
         &self,
-        socket_addr: SocketAddr,
-        tcp_stream: TcpStream,
-    ) -> Arc<Mutex<TcpStream>> {
-        let start = Instant::now();
-        let tcp_stream = Arc::new(Mutex::new(tcp_stream));
-        if socket_addr.is_ipv4() {
-            let mut mutex_guard = self.ipv4_tcp_clients_sockets.lock().await;
-            mutex_guard.insert(socket_addr, tcp_stream.clone());
-            drop(mutex_guard);
-        } else if socket_addr.is_ipv6() {
-            let mut mutex_guard = self.ipv6_tcp_clients_sockets.lock().await;
-            mutex_guard.insert(socket_addr, tcp_stream.clone());
-            drop(mutex_guard);
-        }
-        println!("put_tcp_server took {:?}", start.elapsed());
-        tcp_stream
+        socket_addr: String,
+        tcp_client: Arc<RwLock<TcpClient>>,
+    ) {
+        let mut mutex_guard = self.tcp_ipv4_clients.write().await;
+        mutex_guard.insert(socket_addr, tcp_client);
+        drop(mutex_guard);
+    }
+    pub async fn put_ipv6_tcp_client(
+        &self,
+        socket_addr: String,
+        tcp_client: Arc<RwLock<TcpClient>>,
+    ) {
+        let mut mutex_guard = self.tcp_ipv6_clients.write().await;
+        mutex_guard.insert(socket_addr, tcp_client);
+        drop(mutex_guard);
     }
 }
