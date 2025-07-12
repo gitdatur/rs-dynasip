@@ -9,7 +9,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Mutex};
 
 pub struct TcpIpv4Server {
@@ -61,45 +61,43 @@ async fn accept_clients(tcp_listener: Arc<TcpListener>, shared_state: Arc<Shared
     loop {
         match tcp_listener.accept().await {
             Ok((stream, _)) => {
-                info!(
-                    "new ipv4 tcp connection from {}",
-                    stream.peer_addr().unwrap()
-                );
-                let (shutdown_tx, shutdown_rx) = oneshot::channel();
-                let client = Arc::new(TcpClient {
-                    stream: Mutex::new(stream),
-                    disconnect_client_signal: Mutex::new(shutdown_tx),
-                });
-                shared_state
-                    .put_tcp_ipv4_client(
-                        client.stream.lock().await.peer_addr().unwrap().to_string(),
-                        Arc::clone(&client),
-                    )
-                    .await;
-                tokio::spawn(handle_tcp_client(
-                    Arc::clone(&client),
-                    Arc::clone(&shared_state),
-                ));
+                tokio::spawn(handle_client(stream, Arc::clone(&shared_state)));
             }
             Err(_) => {}
         };
     }
 }
 
-async fn handle_tcp_client(client: Arc<TcpClient>, shared_state: Arc<SharedState>) {
+async fn handle_client(stream: TcpStream, shared_state: Arc<SharedState>) {
+    info!(
+        "new tcp ipv4 client, local: {}, remote: {}",
+        stream.local_addr().unwrap(),
+        stream.peer_addr().unwrap()
+    );
+    let client_address = stream.peer_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (rx, tx) = stream.into_split();
+    let client = Arc::new(TcpClient {
+        rx: Mutex::new(rx),
+        tx: Mutex::new(tx),
+        shutdown_signal: Mutex::new(shutdown_tx),
+    });
+    let mut rx = client.rx.lock().await;
+    shared_state
+        .put_tcp_ipv4_client(client_address.to_string(), Arc::clone(&client))
+        .await;
     let max_sip_message_size = 65536;
     let crlf_pattern = b"\r\n\r\n" as &[u8];
     let mut buffer = [0; 1421];
     let mut buffer_accumulator: Vec<u8> = Vec::with_capacity(max_sip_message_size);
     let mut last_parsed_index: usize = 0;
-    let mut stream = client.stream.lock().await;
-    // stream.into_split()
+
     loop {
-        match stream.read(&mut buffer).await {
+        match rx.read(&mut buffer).await {
             Ok(0) => {
-                info!("client disconnected [{}]", stream.peer_addr().unwrap());
+                info!("client disconnected [{}]", rx.peer_addr().unwrap());
                 shared_state
-                    .remove_tcp_ipv4_client(&stream.peer_addr().unwrap().to_string())
+                    .remove_tcp_ipv4_client(&rx.peer_addr().unwrap().to_string())
                     .await;
                 break;
             }
@@ -107,7 +105,7 @@ async fn handle_tcp_client(client: Arc<TcpClient>, shared_state: Arc<SharedState
                 if number_of_read_bytes + buffer_accumulator.len() >= max_sip_message_size {
                     error!(
                         "Too many bytes received and no CRLF reached, terminating client [{}]",
-                        stream.peer_addr().unwrap()
+                        rx.peer_addr().unwrap()
                     );
                     break;
                 }
@@ -133,13 +131,13 @@ async fn handle_tcp_client(client: Arc<TcpClient>, shared_state: Arc<SharedState
                             Ok(request) => {
                                 info!(
                                     "parsed a sip message from tcp ipv4 client {}",
-                                    stream.peer_addr().unwrap()
+                                    rx.peer_addr().unwrap()
                                 )
                             }
                             Err(sip_parse_error) => {
                                 error!(
                                     "failed to parse a sip message from tcp ipv4 client {} [{}]",
-                                    stream.peer_addr().unwrap(),
+                                    rx.peer_addr().unwrap(),
                                     sip_parse_error.to_string()
                                 )
                             }
@@ -152,7 +150,10 @@ async fn handle_tcp_client(client: Arc<TcpClient>, shared_state: Arc<SharedState
                 }
             }
             Err(_) => {
-                println!("failed to read data from socket")
+                error!(
+                    "failed to read from tcp client [{}]",
+                    rx.peer_addr().unwrap()
+                );
             }
         }
     }

@@ -1,4 +1,4 @@
-use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{oneshot, Mutex};
 
 pub struct SocketProperties {
@@ -9,6 +9,7 @@ pub struct SocketProperties {
 }
 
 pub struct TcpClient {
-    pub(crate) stream: Mutex<TcpStream>,
-    pub disconnect_client_signal: Mutex<oneshot::Sender<()>>,
+    pub rx: Mutex<OwnedReadHalf>,
+    pub tx: Mutex<OwnedWriteHalf>,
+    pub shutdown_signal: Mutex<oneshot::Sender<()>>,
 }
