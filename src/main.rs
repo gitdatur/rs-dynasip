@@ -1,29 +1,30 @@
-mod shared_state;
 mod sip;
 
-use crate::shared_state::SharedState;
-use crate::sip::common_structs::SocketProperties;
-use crate::sip::tcp_ipv4_server::TcpIpv4Server;
-use nom::Parser;
-use std::str::FromStr;
+use crate::sip::servers::tcp_ipv4::TcpIpv4Server;
+use crate::sip::SharedState;
+use log::error;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncReadExt, AsyncWrite};
 
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Debug)
         .init();
-    let global_shared_state = Arc::new(SharedState::new());
+    let shared_state = Arc::new(SharedState::new());
     let localhost_tcp_ipv4_server = TcpIpv4Server::new(
-        Arc::clone(&global_shared_state),
-        SocketProperties {
-            max_sip_message_size: 65536,
-            buffer_size: 1412,
-            ip_address: "127.0.0.1".to_string(),
-            port: 5060,
-        },
+        Arc::clone(&shared_state),
+        "127.0.0.1".to_string(),
+        5060,
+        65000,
     );
+    let localhost_tcp_ipv4_server = match localhost_tcp_ipv4_server {
+        Ok(server) => server,
+        Err(error) => {
+            error!("failed to start ipv4 server on localhost");
+            return;
+        }
+    };
     match localhost_tcp_ipv4_server.start().await {
         Ok(_) => {}
         Err(_) => {}
